@@ -87,9 +87,9 @@ logger:
 ##########
 # Hardware Configuration
    
-psram:
-  mode: octal
-  speed: 80MHz
+#psram:
+#  mode: octal
+#  speed: 80MHz
 
 #######
 # Buses Configuration
