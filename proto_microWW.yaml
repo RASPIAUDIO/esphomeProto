@@ -1,6 +1,6 @@
 substitutions:
   name: muse-proto
-  friendly_name: Raspiaudio Muse Proto
+  friendly_name: Proto
 #States  
   P_starting: "0"
   P_waiting: "1"
@@ -17,60 +17,71 @@ esphome:
     board_build.flash_mode: dio
     board_build.arduino.memory_type: qio_opi
   project:
-    name: raspiaudio.protoVoice-assistant
-    version: "2025.2.2"    
+    name: raspiaudio.voice-assistant
+    version: "2025.3.0"    
   on_boot:
     priority: -100.0
     then:
+      - output.turn_on: dac_mute
+      - lambda: id(muteH) = true;
       - lambda: id(phase) = 0;
+      - speaker.volume_set: 100%
       - script.execute: update_led  
+      - lambda: |-
+          auto current = id(amplifier_gain_select).state;
+          if (current.empty()) {
+            current = "12 dB";
+            id(amplifier_gain_select).publish_state(current);
+          }
+          id(set_amplifier_gain).execute(current);
             
-
         
 esp32:
   board: esp-wrover-kit  
   flash_size: 4MB
+  partitions: proto_partitions.csv  
   framework:
     type: esp-idf
     version: recommended
     sdkconfig_options:
-      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP_CONSOLE_USB_CDC: "n"
+      CONFIG_ESP_CONSOLE_UART_DEFAULT: "y"
+      CONFIG_ESP_CONSOLE_UART_NUM: "0"
+      CONFIG_ESP_CONSOLE_UART_BAUDRATE: "115200"
        
 micro_wake_word:
   id: mww
+  microphone: proto_mic
+  stop_after_detection: false
   models:
     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
-#   - model: hey_jarvis
-#    - model: hey_mycroft
-#    - model: alexa
-#  vad:
-  microphone: proto_mic
-  on_wake_word_detected:        
+      id: okay_nabu
+
+  on_wake_word_detected:
+    - logger.log: "WW"
     - voice_assistant.start:
-        wake_word: !lambda return wake_word;       
+        wake_word: !lambda return wake_word;
 
 ota:                 
   - platform: esphome
     id: ota_esphome
   - platform: http_request
     id: ota_http_request
-   
-#update:
-#  - platform: http_request
-#    id: update_http_request
-#    name: Firmware
-#    source: https://raw.githubusercontent.com/RASPIAUDIO/esphomeLuxe/main/manifest_update.json 
+ 
+update:
+  - platform: http_request
+    id: update_http_request
+    name: Firmware
+#    source: https://raw.githubusercontent.com/RASPIAUDIO/raspiaudio.github.io/main/MuseRadio/Homeassistant/manifest_update.json
+    source: https://raw.githubusercontent.com/RASPIAUDIO/esphomeLuxe/main/manifest_update.json     
     
-        
 http_request:  
     
 api:
 
 wifi:
-#  ssid: SSSSS
-#  password: PPPPP
+#  ssid: 
+#  password: 
   power_save_mode: none
   output_power: 15
   ap:
@@ -79,24 +90,19 @@ wifi:
 
 captive_portal:
                 
-#improv_serial: 
+improv_serial:  # Disable during debugging to free UART0 for logs
 
 logger:
-   level: DEBUG
+  level: DEBUG
+  baud_rate: 115200
+  hardware_uart: UART0
+  logs:
+    media_player: WARN
 
-##########
-# Hardware Configuration
    
-#psram:
-#  mode: octal
-#  speed: 80MHz
-
-#######
-# Buses Configuration
-#i2c:
-#  sda: GPIO18
-#  scl: GPIO23
-
+psram:
+  mode: quad
+  speed: 80MHz
 
 #####################
 # Internal Components
@@ -108,31 +114,151 @@ output:
       inverted: true
       mode:
         output: true
-  - platform: gpio
-    id: gain
-    pin: 
-      number: GPIO23
-      inverted: true
-      mode:
-        output: true   
-                
-
+              
+  
+              
 globals:
   - id: Vol
     type: float
-    initial_value: '0.6'    
+    initial_value: '0.9'    
   - id: phase
     type: int
     initial_value: '0'    
   - id: mute  
     type: bool
     initial_value: 'false'        
+  - id: muteH 
+    type: bool
+    initial_value: 'false'     
+  - id: last_led_phase
+    type: int
+    initial_value: '-1'
+  - id: audio_active
+    type: bool
+    initial_value: 'false'
+  - id: audio_started
+    type: bool
+    initial_value: 'false'
+  - id: last_volume_cmd
+    type: float
+    initial_value: '-1.0'
         
-sensor:
+interval:
+  - interval: 0.1sec   
+    then:          
+      - if:
+          condition:  
+             - speaker.is_stopped:             
+          then:
+             - if:
+                condition:
+                  - not:
+                     - lambda: 'return(id(muteH));'            
+                then:
+                  - output.turn_on: dac_mute   
+                  - lambda: id(muteH) = true;
+                  - logger.log: "====> hardware mute"     
+          
+      - if:
+          condition:  
+             - speaker.is_playing:             
+          then:
+             - if:
+                condition:
+                  - lambda: 'return(id(muteH));'            
+                then:
+                  - output.turn_off: dac_mute   
+                  - lambda: id(muteH) = false;          
+                  - logger.log: "====> hardware unmute"               
+     
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(audio_active) && !id(audio_started);'
+              - speaker.is_playing:
+          then:
+            - lambda: id(audio_started) = true;
+          
 
+sensor:
+  - platform: adc
+    pin: GPIO33
+    name: Battery voltage
+    device_class: voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    state_class: measurement
+    entity_category: diagnostic
+    update_interval: 15s
+    attenuation: auto
+    filters:
+      - multiply: 2 # https://forum.raspiaudio.com/t/esp-muse-luxe-bluetooth-speaker/294/12
+      - exponential_moving_average:
+          alpha: 0.2
+          send_every: 2
+      - delta: 0.002
+    on_value:
+      then:
+        - sensor.template.publish:
+            id: battery_percent
+            state: !lambda "return x;"
+
+  - platform: template
+    name: Battery
+    id: battery_percent
+    device_class: battery
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    state_class: measurement
+    entity_category: diagnostic
+    update_interval: 15s
+    filters:
+      - calibrate_polynomial:
+          degree: 3
+          datapoints:
+            - 4.58 -> 100.0
+            - 4.5 -> 97.1
+            - 4.47 -> 94.2
+            - 4.44 -> 88.4
+            - 4.42 -> 82.7
+            - 4.41 -> 76.9
+            - 4.41 -> 71.1
+            - 4.37 -> 65.3
+            - 4.35 -> 59.5
+            - 4.31 -> 53.8
+            - 4.28 -> 48.0
+            - 4.26 -> 42.2
+            - 4.23 -> 36.4
+            - 4.21 -> 30.6
+            - 4.19 -> 24.9
+            - 4.16 -> 19.1
+            - 4.1 -> 13.3
+            - 4.07 -> 10.4
+            - 4.03 -> 7.5
+            - 3.97 -> 4.6
+            - 3.82 -> 1.7
+            - 3.27 -> 0.0
+      - lambda: return clamp(x, 0.0f, 100.0f);   
+                  
                    
-binary_sensor:
- 
+binary_sensor:      
+  - platform: gpio
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true 
+    name: Mute
+    on_click:       
+      - script.execute: manual_listen
+    on_double_click:
+       - if:
+           condition: 
+              - lambda: 'return(id(phase) == 2);'
+           then:
+              - media_player.stop:  
+                               
 
 
 light:
@@ -158,45 +284,60 @@ light:
 
     
 i2s_audio:
+    id: i2s0
     i2s_lrclk_pin: GPIO25
     i2s_bclk_pin: GPIO5
-    i2s_mclk_pin: GPIO0
+#    i2s_mclk_pin: GPIO0
 
 microphone:
   - platform: i2s_audio
     id: proto_mic
+    i2s_audio_id: i2s0
     sample_rate: 16000
     i2s_din_pin: GPIO35
-    bits_per_sample: 16bit
+    bits_per_sample: 24bit
     channel: right
-    adc_type: external  
+    adc_type: external
+    mclk_multiple: 384
+
+    
     
 speaker:
   - platform: i2s_audio
-    id: luxe_speaker
+    id: proto_speaker
+    i2s_audio_id: i2s0
     i2s_dout_pin: GPIO26
     dac_type: external
     sample_rate: 48000
     bits_per_sample: 16bit
-    channel: stereo
+    num_channels: 1
     buffer_duration: 100ms     
     
 media_player:
   - platform: speaker
     name: None
-    id: luxe_media_player
-#    volume_min: 0.5
-#    volume_max: 0.8
+    id: proto_media_player
+    internal: false   
+#    task_stack_in_psram: true
+    volume_min: 0.5
+    volume_max: 1.0
     announcement_pipeline:
-      speaker: luxe_speaker
-      format: FLAC
+      speaker: proto_speaker
+      format: WAV
       sample_rate: 48000
-      num_channels: 2  
+      num_channels: 1       
     files:
       - id: little_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac          
+        file: https://github.com/RASPIAUDIO/esphomeLuxe/raw/refs/heads/main/wav/sounds_timer_finished.wav                
     on_announcement: 
       - micro_wake_word.stop:
+      - wait_until:
+          not:
+            micro_wake_word.is_running:
+      - microphone.mute: proto_mic
+      - lambda: |-
+          id(audio_active) = true;
+          id(audio_started) = false;
       - if:
            condition:
                 lambda: 'return(id(phase) != 2);'
@@ -207,26 +348,80 @@ media_player:
               - script.execute: update_led    
                      
     on_idle:
-      - wait_until:
-         and:
-          - not:
-              media_player.is_announcing:
-          - not:
-              voice_assistant.is_running:    
       - if:
-          condition:              
-              lambda: 'return((id(phase) == 4) || (id(phase) == 2));'
+          condition:
+            lambda: 'return id(audio_active) && id(audio_started);'
           then:
+            - wait_until:
+               and:
+                - not:
+                    media_player.is_announcing:
+                - not:
+                    voice_assistant.is_running:    
+            - if:
+                condition:              
+                    lambda: 'return((id(phase) == 4) || (id(phase) == 2));'
+                then:
+                  - lambda: |-
+                       id(phase) = 1; 
+            - microphone.unmute: proto_mic
+            - micro_wake_word.start:                                              
+            - script.execute: update_led
             - lambda: |-
-                 id(phase) = 1; 
-      - micro_wake_word.start:                                                
-      - script.execute: update_led     
+                id(audio_active) = false;
+                id(audio_started) = false;
+    on_play:
+      - if:
+          condition:
+            lambda: 'return !id(mute);'
+          then:
+            - output.turn_off: dac_mute
+            - lambda: id(muteH) = false;
       
+select:
+  - platform: template
+    id: amplifier_gain_select
+    name: "Amplifier gain"
+    icon: "mdi:volume-equal"
+    optimistic: true
+    restore_value: true
+    initial_option: "12 dB"
+    options:
+      - "15 dB"
+      - "12 dB"
+      - "6 dB"
+      - "3 dB"
+    on_value:
+      then:
+        - lambda: |-
+            id(set_amplifier_gain).execute(x);
+  - platform: template
+    name: "Wake word sensitivity"
+    optimistic: true
+    initial_option: Slightly sensitive
+    restore_value: true
+    entity_category: config
+    options:
+      - Slightly sensitive
+      - Moderately sensitive
+      - Very sensitive
+    on_value:
+      # Adjust model probability thresholds to tune wake word sensitivity
+      lambda: |-
+        if (x == "Slightly sensitive") {
+          id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo
+        } else if (x == "Moderately sensitive") {
+          id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH on DipCo
+        } else if (x == "Very sensitive") {
+          id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
+        }
+
 
 voice_assistant:
   id: va
   microphone: proto_mic
-  media_player: luxe_media_player
+  media_player: proto_media_player
+  micro_wake_word: mww
   use_wake_word: false
   noise_suppression_level: 2
   auto_gain: 31dBFS
@@ -240,7 +435,6 @@ voice_assistant:
      - script.execute: update_led
 
   on_stt_end:
-     - media_player.play_media: !lambda return x;
      - light.turn_on:
         id: top_led
         blue: 60%
@@ -250,10 +444,18 @@ voice_assistant:
       
 
   on_tts_start:
-     - logger.log: "answering  4 => phase"                   
-     - lambda: |-
+    - logger.log: "answering  4 => phase"                   
+    - micro_wake_word.stop:
+    - wait_until:
+        not:
+          micro_wake_word.is_running:
+    - microphone.mute: proto_mic
+    - lambda: |-
+        id(audio_active) = true;
+        id(audio_started) = false;
+    - lambda: |-
         id(phase) = 4;
-     - script.execute: update_led
+    - script.execute: update_led
                      
   on_error:
     - logger.log: "ERROR!!!!!!!!!!!!!!!!"  
@@ -272,15 +474,132 @@ voice_assistant:
 # Scripts
 
 script:   
+
+  - id: set_amplifier_gain
+    parameters:
+      option: std::string
+    then:
+      - lambda: |-
+          #include "driver/gpio.h"
+          const gpio_num_t gain_pin = GPIO_NUM_23;
+
+          auto apply_input = [&](gpio_pull_mode_t pull_mode) {
+            gpio_reset_pin(gain_pin);
+            gpio_set_pull_mode(gain_pin, pull_mode);
+            gpio_set_direction(gain_pin, GPIO_MODE_INPUT);
+          };
+
+          auto apply_output = [&](int level) {
+            gpio_reset_pin(gain_pin);
+            gpio_set_pull_mode(gain_pin, GPIO_FLOATING);
+            gpio_set_direction(gain_pin, GPIO_MODE_OUTPUT);
+            gpio_set_level(gain_pin, level);
+          };
+
+          if (option == "15 dB") {
+            apply_input(GPIO_PULLDOWN_ONLY);
+          } else if (option == "12 dB") {
+            apply_output(0);
+          } else if (option == "6 dB") {
+            apply_output(1);
+          } else if (option == "3 dB") {
+            apply_input(GPIO_PULLUP_ONLY);
+          } else {
+            ESP_LOGW("gain", "Unknown amplifier gain option: %s", option.c_str());
+            return;
+          }
+
+          ESP_LOGI("gain", "Amplifier gain set to %s", option.c_str());
+
+  - id: manual_listen
+    then:
+      - logger.log: "Manual listen button pressed"
+      - if:
+          condition:
+            lambda: 'return id(mute);'
+          then:
+            - logger.log: "Manual listen -> unmute and go to waiting"
+            - script.execute: mute_off
+            - voice_assistant.stop:
+            - wait_until:
+                not:
+                  voice_assistant.is_running:
+            - micro_wake_word.start:
+            - lambda: |-
+                 id(audio_active) = false;
+                 id(audio_started) = false;
+                 id(phase) = 1;
+            - script.execute: update_led
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(phase) == 2;'
+                then:
+                  - logger.log: "Manual listen -> mute current playback"
+                  - script.execute: mute_on
+                else:
+                  - if:
+                      condition:
+                        lambda: 'return id(phase) == 1;'
+                      then:
+                        - logger.log: "Manual listen -> switch waiting to listening"
+                        - voice_assistant.stop:
+                        - wait_until:
+                            not:
+                              voice_assistant.is_running:
+                        - script.execute: mute_off
+                        - microphone.unmute: proto_mic
+                        - micro_wake_word.stop:
+                        - lambda: |-
+                             id(audio_active) = false;
+                             id(audio_started) = false;
+                             id(phase) = 3;
+                        - script.execute: update_led
+                        - voice_assistant.start:
+                      else:
+                        - if:
+                            condition:
+                              lambda: 'return id(phase) == 3;'
+                            then:
+                              - logger.log: "Manual listen -> switch listening to waiting"
+                              - voice_assistant.stop:
+                              - wait_until:
+                                  not:
+                                    voice_assistant.is_running:
+                              - micro_wake_word.start:
+                              - lambda: |-
+                                   id(audio_active) = false;
+                                   id(audio_started) = false;
+                                   id(phase) = 1;
+                              - script.execute: update_led
+                            else:
+                              - logger.log: "Manual listen -> fallback to waiting"
+                              - voice_assistant.stop:
+                              - wait_until:
+                                  not:
+                                    voice_assistant.is_running:
+                              - micro_wake_word.start:
+                              - lambda: |-
+                                   id(audio_active) = false;
+                                   id(audio_started) = false;
+                                   id(phase) = 1;
+                              - script.execute: update_led
+
+
   - id: update_led
     then:  
-       - logger.log: "==>>>update_led" 
-       - lambda: |-
-             if(id(phase) == 0)id(start).execute();
-             if(id(phase) == 1)id(waiting).execute();  
-             if(id(phase) == 2)id(external_player).execute();                      
-             if(id(phase) == 3)id(listening).execute();
-             if(id(phase) == 4)id(answering).execute();
+       - if:
+           condition:
+             lambda: 'return id(phase) != id(last_led_phase);'
+           then:
+             - lambda: id(last_led_phase) = id(phase);
+             - logger.log: "==>>>update_led" 
+             - lambda: |-
+                   if(id(phase) == 0)id(start).execute();
+                   if(id(phase) == 1)id(waiting).execute();  
+                   if(id(phase) == 2)id(external_player).execute();                      
+                   if(id(phase) == 3)id(listening).execute();
+                   if(id(phase) == 4)id(answering).execute();
                          
   - id: start           
     then:
@@ -291,19 +610,21 @@ script:
           green: 0%
           blue: 80%             
      - delay: 5sec
-#     - lambda: id(my_es8388).setup();
-     - voice_assistant.start:
-     - media_player.volume_set: 90%
+     - output.turn_off: dac_mute
+     - lambda: id(phase) = 1;
+     - micro_wake_word.stop:
+     - wait_until:
+         not:
+           micro_wake_word.is_running:
+     - microphone.mute: proto_mic
+     - delay: 200ms
      - media_player.speaker.play_on_device_media_file:
           media_file: little_sound
-          announcement: true     
-     - output.turn_off: dac_mute
-     - output.turn_on: gain
-     - lambda: id(phase) = 1;
+          announcement: false      
      - script.execute: update_led
      
   - id: waiting
-    then:   
+    then:
      - light.turn_on:
           id: top_led
           effect: pulse
@@ -343,20 +664,32 @@ script:
           red: 80%
           green: 40%
           blue: 0%                      
-             
+                      
+                        
   - id: mute_on
     then:
-       - media_player.volume_set:
-            volume: '0'
+       - if:
+           condition:
+             lambda: 'return fabsf(id(last_volume_cmd)) > 0.005f;'
+           then:
+             - media_player.volume_set:
+                 id: proto_media_player
+                 volume: '0'
+             - lambda: id(last_volume_cmd) = 0.0f;
        - lambda: id(mute) = true;
-       
+     
   - id: mute_off
     then:
-       - media_player.volume_set:
-            volume: !lambda return(id(Vol));
-       - lambda: id(mute) = false;             
-            
-            
+
+       - if:
+           condition:
+             lambda: 'return fabsf(id(last_volume_cmd) - id(Vol)) > 0.005f;'
+           then:
+             - media_player.volume_set:
+                  id: proto_media_player
+                  volume: !lambda return(id(Vol));
+             - lambda: id(last_volume_cmd) = id(Vol);
+       - lambda: id(mute) = false;               
             
       
       
