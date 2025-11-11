@@ -1,0 +1,15 @@
+{
+  "name": "raspiaudio.voice-assistant",
+  "version": "2025.3.0",
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "ota": {
+         "md5": "901815b6c4bb3001ec06277cf6f74fd5",  
+         "path": "https://raw.githubusercontent.com/RASPIAUDIO/esphomeProto/main/update_firmware.bin",
+         "offset": 0,
+         "summary": "Latest firmware"
+         }
+    }
+    ]     
+}
